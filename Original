@@ -1,0 +1,349 @@
+Please create a Trading bot I can use in MT5 based on the content outlined in the following document. Add labels and eplanations to every aspect of the code so I can understand it in review:
+Document:
+0) What this document really is (in EA terms)
+This PDF is a top-down trading system with:
+HTF (Higher Timeframe) bias + targets on H4
+HTF structure validation on H4 (untouched wick “indication levels”)
+LTF (Lower Timeframe) entry on M5 using ICC + confluences
+Strict filters (avoid high/low boundaries, consolidation, low volatility)
+Risk management (5 trades/week max, 1/day, 5–10% risk/trade)
+Two trade management modes: “Iron Dome” and “Shield”
+Also there’s a timeframe mapping sketch: Monthly→4H, Weekly→1H, Daily→15m, 4H→5m (page 8).
+That implies “use one lower timeframe to refine the next higher.”
+---
+1) Core vocabulary translated into code objects
+A) Candle Impulse Theory (CIT)
+> “Next candle likely continues same direction” if previous candle:
+1. closed with impulsive direction
+2. exceeded prior candle boundaries
+3. closed with momentum
+4. did NOT close at/after reaching a market boundary
+Code translation (H4):
+Create a function:
+`bool IsImpulseCandle(tf, i)`
+`bool IsMomentumCandle(tf, i)`
+`bool BrokePriorRange(tf, i)` (high>high[i+1] and low<low[i+1] OR just in direction)
+`bool ClosedNearBoundary(tf, i, boundaryLevels[])`
+Then define Current Impulsive Move as the most recent sequence of candles that pass impulse conditions.
+B) ICC (Indication → Correction → Continuation)
+Indication: identifies trend via “breaking of levels”
+Correction: retrace back toward indication level
+Continuation: resume trend after correction
+Code translation (state machine):
+`enum Phase { SEEK_BIAS, SEEK_INDICATION, SEEK_CORRECTION, SEEK_ENTRY, IN_TRADE };`
+Indication Level = a wick level (see below) or broken structure level.
+Correction = price returns toward that level (often into 50% zone).
+Continuation = CHoCH + displacement triggers entry.
+C) Candle Continuation Theory (CCT)
+CCT = CIT + ICC combined
+Code translation: CCT is not new logic; it’s just “use CIT candles to define bias + use ICC for entry.”
+---
+2) Strategy step-by-step, rewritten as an EA pipeline
+Step 1 — Market Bias & Targets (H4)
+From PDF: observe current impulsive move and candle structure; identify boundaries as targets (H/L levels, trend lines/channels). Avoid if at high/low, consolidating/erratic, low volatility/momentum.
+EA implementation:
+On each new H4 candle:
+1. Detect bias = `BULL`, `BEAR`, or `NONE` using impulsive move logic.
+2. Build a list of targets (“boundaries”):
+Recent swing highs/lows
+Optional: channel / trendline (harder to do robustly; usually skip or approximate with linear regression channel)
+Avoid filters (must be code-defined):
+Because the PDF uses human words, you must choose measurable definitions:
+At a High/Low level: price within X pips/points of last N-bar swing high/low.
+Consolidating: ATR below threshold OR range compression (high-low of last N H4 bars is small).
+Erratic structure: too many alternating candle directions; e.g., >K direction changes in last N bars.
+Low volatility/momentum: ATR low OR average candle body small.
+> My strong opinion: use ATR-based gates. “Erratic structure” is subjective; define it or delete it.
+---
+Step 2 — Market Structure Identification (H4)
+From PDF: Identify previously untouched wick levels that correlate with direction of current impulsive move. Candle conditions: previous candles must have momentum; structure impulsive not grindy.
+This is the “Indication level” generator.
+Code definition (practical):
+A wick level is a price (high or low) from a momentum candle that has not been revisited.
+For bullish bias:
+Candidate indication levels = upper wick highs? (PDF says “wick levels that correlate with direction of current impulsive move”, which is vague)
+In most “wick retest” systems, for bullish continuation you watch prior lows / demand wicks, not highs.
+So we implement both options as a parameter:
+`input bool UseWickHighsForBull = false; // default false`
+Untouched wick level condition:
+A wick price `L` from candle `k` is “untouched” if for all candles between `k-1` down to current:
+bullish case (retest down): `Low[j] > L` (price never traded at/below L)
+bearish case (retest up): `High[j] < L`
+Store these in an array of `struct Level { double price; datetime time; int tf; }`
+Also enforce “momentum candle” for candle `k`:
+`abs(close-open) / (high-low) >= MomentumBodyRatio` AND body size > ATRX
+---
+Step 3 — Entry Parameters & Confluence (M5)
+From PDF: entry requires:
+1. brief push beyond indication level
+2. 50% Golden Zone
+3. CHoCH
+4. strong displacement at break
+5. H4 candle during NY-London overlap
+Rules: No displacement = fake; No candle close = no entry
+Let’s translate each into code.
+3.1 “Brief push beyond indication level”
+Meaning: price wicks through the level then returns.
+Code definition:
+For bullish continuation (after correction):
+price dips below `indicationLevel` by at least `SweepMinPoints`
+then closes back above the level (or above some reclaim line)
+`bool SweptLevelAndReclaimed(level, direction)`
+3.2 “50% Golden Zone”
+This implies a Fibonacci retrace to 50% of some swing.
+Ambiguity: 50% of what swing?
+Most implementable choice: the last H4 impulse leg swing (start->end).
+Code definition:
+Identify impulse leg: from last swing low to swing high (bull) or vice versa.
+Compute `gold50 = (legHigh + legLow)/2`
+Entry region requires M5 price trades within tolerance of gold50.
+`bool InGoldenZone(price, gold50, tolPoints)`
+3.3 CHoCH (Change of Character)
+Usually means: in a down correction, you break the last lower high (bullish CHoCH), or vice versa.
+Code definition (M5 structure):
+Detect local pivots on M5 using fractals or zigzag-like logic.
+In bullish setup, CHoCH occurs when:
+during correction you had lower highs/lows, then price closes above last minor swing high.
+`bool IsCHoCH(direction, lookbackBars)`
+3.4 Strong displacement at CHoCH break
+This is “big breakout candle with momentum”.
+Code definition:
+At the CHoCH breakout bar:
+Body size >= `DisplacementATRMult ATR(M5, n)`
+Candle closes beyond the broken structure level by `BreakCloseBufferPoints`
+`bool IsDisplacementBreakout(barIndex)`
+3.5 “No candle close = no entry”
+So you require a completed bar close confirmation, not tick-touch.
+Code translation:
+Trigger entries only on new bar events, not intra-bar.
+---
+4) Session filter (NY–London overlap) in code
+PDF gives sessions in CST:
+London: 3:00 PM–12:00 AM CST
+NY: 8:00 PM–5:00 AM CST
+Overlap: 8:00 PM–12:00 AM CST
+Reality check: MT5 server time is broker-dependent. You must convert.
+Implementation approach:
+Input: `input int SessionUTCOffsetHours = -6; // CST standard`
+Determine current UTC time from `TimeGMT()`
+Convert to CST: `cst = TimeGMT() + offset3600`
+Check if `Hour(cst)` in overlap window.
+Also handle daylight savings (CST vs CDT). If you want it robust:
+add `input bool UseDST = true;` and maintain DST rules (annoying)
+or just let user manually adjust offset seasonally (simple and common)
+---
+5) News filter (NFP, CPI)
+PDF lists:
+NFP first Friday monthly 8:30 AM EST
+CPI around 10th–15th mid-week 8:30 AM EST
+Code reality: “around 10th–15th” is not deterministic. Don’t hardcode dates.
+Best MT5 way: use the built-in Economic Calendar functions (if broker supports). If not available, treat as manual “news blackout windows”.
+Implement:
+`input bool UseNewsFilter = true;`
+`input int NewsBlackoutMinutesBefore = 60;`
+`input int NewsBlackoutMinutesAfter = 30;`
+Either:
+(A) Use `CalendarValueHistory()` / `CalendarEventById()` etc.
+(B) Manual list of datetime news events input by user.
+> Strong opinion: implement both. Calendar if available, manual fallback.
+---
+6) Risk management rewritten as EA constraints
+From PDF:
+Trade days Mon–Fri
+5 trades/week max, 1 trade/day
+risk 5–10% per trade
+SL behind indication level at “bias invalidation”
+TP just before target structure
+6.1 Trade frequency control
+You need persistent counters:
+`int tradesToday;`
+`int tradesThisWeek;`
+Track by date/week number (ISO week).
+6.2 Stop loss placement
+“Comfortably behind indication level” = buffer.
+Code:
+For bullish:
+`SL = indicationLevel - SLBufferPoints`
+For bearish:
+`SL = indicationLevel + SLBufferPoints`
+6.3 Take profit placement
+“Just before target structure”:
+`TP = targetLevel - TPBufferPoints` for bullish
+`TP = targetLevel + TPBufferPoints` for bearish
+---
+7) Position sizing formulas (fixing them for MT5 reality)
+PDF gives:
+FX lot size = (Balance Risk%) / (SL pips 10)
+Gold lot size = (Balance Risk%) / (SL pips)
+Those are not universally correct in MT5 because pip value varies by symbol, contract size, account currency, and broker.
+Correct MT5 approach:
+1. Risk money = `AccountBalance() RiskPercent/100`
+2. SL distance in points = `fabs(entry - SL) / _Point`
+3. Money per point per lot:
+use `OrderCalcProfit()` or symbol properties:
+`SYMBOL_TRADE_TICK_VALUE`
+`SYMBOL_TRADE_TICK_SIZE`
+valuePerPointPerLot = tick_value / tick_size _Point
+Then:
+`lots = riskMoney / (slPoints valuePerPointPerLot)`
+Finally normalize:
+clamp to `SYMBOL_VOLUME_MIN/MAX`
+step by `SYMBOL_VOLUME_STEP`
+> If you implement the PDF’s “÷(pips10)” you’ll get wrong lot sizes on half the broker setups.
+---
+8) Trade management protocols as deterministic algorithms
+A) Iron Dome Protocol
+From PDF:
++1R: close 25%, move SL to BE
++2R: close 25%, move SL to +1R
++3R+: hold 50%, trail SL +1R for every +1R gain
+Code definition:
+Let:
+`R = abs(entry - SL_initial)` in price terms
+Current profit in R:
+bullish: `(Bid - entry)/R`
+bearish: `(entry - Ask)/R`
+Maintain flags:
+`did1R`, `did2R`, `trailActive`
+Actions:
+When profitR >= 1 and not did1R:
+partial close 0.25
+SL = entry (breakeven)
+When profitR >= 2 and not did2R:
+partial close 0.25 of original (or of remaining—choose and be consistent)
+SL = entry + sign1R
+When profitR >= 3:
+trail stop to: `SL = max(SL, entry + sign(floor(profitR)-1)R)`
+(so at 3R -> SL at +2R? but PDF says “move SL up +1R for every +1R gains”; after +2R it was at +1R, so at +3R it becomes +2R, etc.)
+B) Shield Protocol
+From PDF:
+move SL to breakeven when price reaches 80% in profit
+trail SL after breaking significant structure with momentum by moving SL +1R per +1R gains
+Ambiguity: “80% in profit” of what? TP distance? Usually yes.
+Implement:
+profitToTP = `abs(entry - TP)`
+if `abs(current - entry) >= 0.8profitToTP` then SL=entry
+Then trailing:
+Only enable trailing after `StructureBreakWithMomentum()` event on M5
+After enabled: same +1R step trail.
+---
+9) Minimal MQL5 architecture (Codex-ready)
+Inputs (recommendation)
+Timeframes:
+`input ENUM_TIMEFRAMES TF_Bias = PERIOD_H4;`
+`input ENUM_TIMEFRAMES TF_Entry = PERIOD_M5;`
+Filters:
+ATR thresholds, consolidation window, momentum ratios
+Session:
+UTC offset, overlap hours, enable/disable
+Risk:
+risk percent, max trades/day/week
+Management:
+mode enum `{IRON_DOME, SHIELD}`
+Structure detection:
+pivot lookback, sweep min, displacement ATR mult
+Core modules / functions
+1. `UpdateBiasAndTargets_H4()`
+2. `FindIndicationLevels_H4()`
+3. `EvaluateEntry_M5()`
+4. `PlaceTrade(direction, entry, sl, tp, lots)`
+5. `ManageOpenPositions()`
+6. `PassesFilters()` (session/news/volatility/consolidation/trade limits)
+Event model
+10) Full algorithm in pseudocode (copy/paste for Codex)
+GLOBAL STATE:
+bias = NONE
+targets[] (prices)
+indicationLevels[] (prices)
+currentWeekTradeCount, currentDayTradeCount
+lastH4BarTime, lastM5BarTime
+ON_TICK:
+if NewBar(H4):
+if !PassesHTFFilters(): bias = NONE; clear levels; return
+bias = DetectBiasByImpulseCIT(H4)
+targets = DetectBoundariesTargets(H4, bias)
+indicationLevels = DetectUntouchedWickLevels(H4, bias)
+if NewBar(M5):
+if bias == NONE: return
+if !PassesExecutionFilters(): return
+if tradesToday>=1 or tradesWeek>=5: return
+level = SelectBestIndicationLevel(indicationLevels, currentPrice, bias)
+if level not found: return
+leg = GetLastImpulseLeg(H4, bias)
+gold50 = (leg.high + leg.low)/2
+if !SweptLevelAndReclaimed(level, bias): return
+if !TradedIntoGoldenZone(gold50): return
+if !CHOCHConfirmed(M5, bias): return
+if !DisplacementBreakout(M5, bias): return
+entry = Market or Limit (choose one; market easiest after close confirmation)
+sl = level +/- SLBuffer
+tp = NearestTargetBefore(targets, bias)
+lots = CalcLotsByRisk(sl)
+PlaceTrade(bias, entry, sl, tp, lots)
+IncrementTradeCounters()
+ManageOpenPositions() // IronDome or Shield logic
+OnTick:
+detect new bar on H4: update bias/levels
+detect new bar on M5: evaluate entry
+every tick: manage trades (partial closes / trailing)
+---
+10) Full algorithm in pseudocode (copy/paste for Codex)
+```text
+GLOBAL STATE:
+bias = NONE
+targets[] (prices)
+indicationLevels[] (prices)
+currentWeekTradeCount, currentDayTradeCount
+lastH4BarTime, lastM5BarTime
+ON_TICK:
+if NewBar(H4):
+if !PassesHTFFilters(): bias = NONE; clear levels; return
+bias = DetectBiasByImpulseCIT(H4)
+targets = DetectBoundariesTargets(H4, bias)
+indicationLevels = DetectUntouchedWickLevels(H4, bias)
+if NewBar(M5):
+if bias == NONE: return
+if !PassesExecutionFilters(): return
+if tradesToday>=1 or tradesWeek>=5: return
+level = SelectBestIndicationLevel(indicationLevels, currentPrice, bias)
+if level not found: return
+leg = GetLastImpulseLeg(H4, bias)
+gold50 = (leg.high + leg.low)/2
+if !SweptLevelAndReclaimed(level, bias): return
+if !TradedIntoGoldenZone(gold50): return
+if !CHOCHConfirmed(M5, bias): return
+if !DisplacementBreakout(M5, bias): return
+entry = Market or Limit (choose one; market easiest after close confirmation)
+sl = level +/- SLBuffer
+tp = NearestTargetBefore(targets, bias)
+lots = CalcLotsByRisk(sl)
+PlaceTrade(bias, entry, sl, tp, lots)
+IncrementTradeCounters()
+ManageOpenPositions() // IronDome or Shield logic
+```
+11) The big “gotchas” you should decide NOW (or Codex will guess wrong)
+These are not defined in the PDF, but must be defined for code:
+1. Exact bias rule: how many impulse candles define it? last 2? last 3?
+2. What is “momentum”: ATR-based? body/range ratio?
+3. Which wick levels count: highs vs lows (I recommend lows for bullish, highs for bearish)
+4. How to compute the impulse leg for 50%: last swing-to-swing? last N bars?
+5. Structure break “significant”: fractal pivots? zigzag threshold?
+6. Entry type: market on close vs limit at 50% (PDF implies a zone + confirmation; market-after-close is simplest and matches “No candle close = no entry.” )
+---
+12) If you want my “codeable default settings” (so this actually works)
+If you don’t specify, here’s what I’d ship as defaults:
+Bias:
+last 2 H4 candles must be impulse candles in same direction
+Momentum candle:
+body >= 0.6 range AND range >= 1.0 ATR(14)
+Consolidation filter:
+ATR(14) < ATR_Min OR (HighestHigh(20)-LowestLow(20)) < RangeMin
+Untouched wick:
+use wick lows for bull, wick highs for bear
+Sweep:
+breach level by 2–5 pips (or symbol points) then close back beyond
+Displacement breakout:
+body >= 1.2 ATR(14) on M5, close beyond structure by buffer
+CHoCH:
+close breaks last pivot in opposite direction (fractals lookback 2)
+
