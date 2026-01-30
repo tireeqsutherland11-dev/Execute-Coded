@@ -128,8 +128,8 @@ datetime g_lastM5BarTime = 0;
 // Trade counters for daily/weekly limits.
 int g_tradesToday = 0;
 int g_tradesWeek  = 0;
-int g_lastTradeDay = -1;
-int g_lastTradeWeek = -1;
+int g_lastTradeDayKey = -1;
+int g_lastTradeWeekKey = -1;
 
 //+------------------------------------------------------------------+
 //| UTILITY: Array helpers                                           |
@@ -762,19 +762,19 @@ void RefreshTradeCounters()
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
 
-   int day = dt.day;
-   int week = dt.week_of_year;
+   int dayKey = (dt.year * 1000) + dt.day_of_year;
+   int weekKey = (dt.year * 100) + dt.week_of_year;
 
-   if(day != g_lastTradeDay)
+   if(dayKey != g_lastTradeDayKey)
    {
       g_tradesToday = 0;
-      g_lastTradeDay = day;
+      g_lastTradeDayKey = dayKey;
    }
 
-   if(week != g_lastTradeWeek)
+   if(weekKey != g_lastTradeWeekKey)
    {
       g_tradesWeek = 0;
-      g_lastTradeWeek = week;
+      g_lastTradeWeekKey = weekKey;
    }
 }
 
