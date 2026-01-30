@@ -1,0 +1,382 @@
+//@version=6
+strategy("Execute-Coded CCT Strategy (HTF Bias + LTF ICC)", overlay=true, initial_capital=10000, pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.0)
+
+//+------------------------------------------------------------------+
+//| INPUTS (USER CONFIGURATION)                                      |
+//+------------------------------------------------------------------+
+
+// --- Timeframes ---
+htfTimeframe = input.timeframe("240", "Higher Timeframe (Bias)")
+
+// --- Bias / Impulse (CIT) settings ---
+BiasImpulseBars   = input.int(2, "Impulse Candles for Bias", minval=1)
+MomentumBodyRatio = input.float(0.60, "Momentum Body/Range", minval=0.1, maxval=1.0)
+MomentumATRMult   = input.float(1.00, "Momentum Range >= ATR *", minval=0.1, step=0.1)
+
+// --- Filters / volatility ---
+ATRPeriod  = input.int(14, "ATR Period")
+ATRMin     = input.float(0.0005, "Minimum ATR (symbol price)")
+RangeLookback = input.int(20, "Consolidation Range Lookback")
+RangeMin      = input.float(0.0020, "Minimum Range (HTF)")
+
+// --- Indication level rules ---
+WickLookback = input.int(50, "Wick Lookback (HTF)")
+UseWickHighsForBull = input.bool(false, "Use Wick Highs for Bullish Indication")
+
+// --- Entry rules (LTF / chart) ---
+SweepMinPoints         = input.float(20, "Sweep Min Points")
+SweepMaxPoints         = input.float(50, "Sweep Max Points")
+GoldenZoneTolerancePts = input.float(20, "Golden Zone Tolerance (points)")
+GoldenZoneLookbackBars = input.int(30, "Golden Zone Lookback Bars")
+PivotLookback          = input.int(2, "Pivot Lookback (fractal)")
+DisplacementATRMult    = input.float(1.20, "Displacement ATR Mult")
+BreakCloseBufferPts    = input.float(10, "Break Close Buffer (points)")
+ImpulseLegLookback     = input.int(20, "Impulse Leg Lookback (HTF)")
+
+// --- Session filter ---
+UseSessionFilter      = input.bool(true, "Use Session Filter")
+SessionUTCOffsetHours = input.int(-6, "Session UTC Offset (CST=-6)")
+OverlapStartHour      = input.int(20, "Overlap Start Hour (CST)")
+OverlapEndHour        = input.int(0, "Overlap End Hour (CST)")
+
+// --- News filter (manual only in Pine) ---
+UseNewsFilter = input.bool(false, "Use News Filter (manual times only)")
+ManualNewsTimesCSV = input.string("", "Manual News Times (CSV, YYYY-MM-DD HH:MM)")
+NewsMinutesBefore = input.int(60, "News Minutes Before")
+NewsMinutesAfter  = input.int(30, "News Minutes After")
+
+// --- Risk / trade limits ---
+RiskPercent     = input.float(5.0, "Risk % per Trade", minval=0.1, maxval=100)
+MaxTradesPerDay = input.int(1, "Max Trades Per Day")
+MaxTradesPerWeek = input.int(5, "Max Trades Per Week")
+SLBufferPoints  = input.float(30, "SL Buffer (points)")
+TPBufferPoints  = input.float(20, "TP Buffer (points)")
+
+// --- Trade management ---
+TradeMgmtMode = input.string("Iron Dome", "Management Mode", options=["Iron Dome", "Shield"])
+
+// --- Execution / misc ---
+AllowLongs  = input.bool(true, "Allow Longs")
+AllowShorts = input.bool(true, "Allow Shorts")
+
+//+------------------------------------------------------------------+
+//| HTF DATA (request.security)                                     |
+//+------------------------------------------------------------------+
+
+htfOpen  = request.security(syminfo.tickerid, htfTimeframe, open,  barmerge.gaps_off, barmerge.lookahead_off)
+htfHigh  = request.security(syminfo.tickerid, htfTimeframe, high,  barmerge.gaps_off, barmerge.lookahead_off)
+htfLow   = request.security(syminfo.tickerid, htfTimeframe, low,   barmerge.gaps_off, barmerge.lookahead_off)
+htfClose = request.security(syminfo.tickerid, htfTimeframe, close, barmerge.gaps_off, barmerge.lookahead_off)
+htfATR   = request.security(syminfo.tickerid, htfTimeframe, ta.atr(ATRPeriod), barmerge.gaps_off, barmerge.lookahead_off)
+
+isNewHTFBar = ta.change(time(htfTimeframe))
+
+//+------------------------------------------------------------------+
+//| UTILITY FUNCTIONS                                                |
+//+------------------------------------------------------------------+
+
+f_body(_open, _close) => math.abs(_close - _open)
+
+f_candleRange(_high, _low) => _high - _low
+
+f_isMomentumCandle(_open, _high, _low, _close, _atr) =>
+    body = f_body(_open, _close)
+    candleRange = f_candleRange(_high, _low)
+    bodyRatio = candleRange == 0.0 ? 0.0 : body / candleRange
+    bodyRatio >= MomentumBodyRatio and candleRange >= (_atr * MomentumATRMult)
+
+f_isImpulseBull(_open, _high, _low, _close, _atr, _highPrev, _closePrev) =>
+    _close > _open and _high > _highPrev and _close > _closePrev and f_isMomentumCandle(_open, _high, _low, _close, _atr)
+
+f_isImpulseBear(_open, _high, _low, _close, _atr, _lowPrev, _closePrev) =>
+    _close < _open and _low < _lowPrev and _close < _closePrev and f_isMomentumCandle(_open, _high, _low, _close, _atr)
+
+f_sessionAllowed() =>
+    if not UseSessionFilter
+        true
+    else
+        utcHour = hour(time, "GMT")
+        sessionHour = (utcHour + SessionUTCOffsetHours + 24) % 24
+        OverlapStartHour <= OverlapEndHour ? (sessionHour >= OverlapStartHour and sessionHour < OverlapEndHour) : (sessionHour >= OverlapStartHour or sessionHour < OverlapEndHour)
+
+f_pointsToPrice(_points) => _points * syminfo.mintick
+
+f_manualNewsBlock() =>
+    if not UseNewsFilter or str.length(ManualNewsTimesCSV) == 0
+        false
+    else
+        // Basic manual parser: if any news timestamp matches current day-hour-minute, block.
+        // This is a coarse filter (no calendar access in Pine).
+        tokens = str.split(ManualNewsTimesCSV, ",")
+        currentStamp = str.format("{0,date,yyyy-MM-dd} {1,number,00}:{2,number,00}", year, month, dayofmonth, hour, minute)
+        isMatch = false
+        for idx = 0 to array.size(tokens) - 1
+            token = str.trim(array.get(tokens, idx))
+            if token == currentStamp
+                isMatch := true
+        isMatch
+
+//+------------------------------------------------------------------+
+//| HTF BIAS + LEVELS                                                |
+//+------------------------------------------------------------------+
+
+var float[] bullLevels = array.new_float()
+var float[] bearLevels = array.new_float()
+
+htfRange = htfHigh - htfLow
+htfIsConsolidating = (htfATR < ATRMin) or (ta.highest(htfHigh, RangeLookback) - ta.lowest(htfLow, RangeLookback) < RangeMin)
+
+f_hasImpulseSequence(_dirBull) =>
+    ok = true
+    for i = 0 to BiasImpulseBars - 1
+        if _dirBull
+            ok := ok and f_isImpulseBull(htfOpen[i], htfHigh[i], htfLow[i], htfClose[i], htfATR[i], htfHigh[i + 1], htfClose[i + 1])
+        else
+            ok := ok and f_isImpulseBear(htfOpen[i], htfHigh[i], htfLow[i], htfClose[i], htfATR[i], htfLow[i + 1], htfClose[i + 1])
+    ok
+
+var int bias = 0 // 1 bull, -1 bear, 0 none
+
+if isNewHTFBar
+    if htfIsConsolidating
+        bias := 0
+        array.clear(bullLevels)
+        array.clear(bearLevels)
+    else
+        bullSeq = f_hasImpulseSequence(true)
+        bearSeq = f_hasImpulseSequence(false)
+        bias := bullSeq ? 1 : bearSeq ? -1 : 0
+
+        // Capture indication levels from momentum candles.
+        if f_isMomentumCandle(htfOpen[1], htfHigh[1], htfLow[1], htfClose[1], htfATR[1])
+            if bias == 1
+                levelPrice = UseWickHighsForBull ? htfHigh[1] : htfLow[1]
+                array.unshift(bullLevels, levelPrice)
+                if array.size(bullLevels) > WickLookback
+                    array.pop(bullLevels)
+            if bias == -1
+                levelPrice = htfHigh[1]
+                array.unshift(bearLevels, levelPrice)
+                if array.size(bearLevels) > WickLookback
+                    array.pop(bearLevels)
+
+        // Remove touched levels
+        for i = array.size(bullLevels) - 1 to 0
+            lvl = array.get(bullLevels, i)
+            if htfLow <= lvl
+                array.remove(bullLevels, i)
+        for i = array.size(bearLevels) - 1 to 0
+            lvl = array.get(bearLevels, i)
+            if htfHigh >= lvl
+                array.remove(bearLevels, i)
+
+f_findNearestLevel(_levels, _dirBull) =>
+    best = na
+    bestDist = 1e10
+    for i = 0 to array.size(_levels) - 1
+        lvl = array.get(_levels, i)
+        if _dirBull and lvl < close
+            dist = math.abs(close - lvl)
+            if dist < bestDist
+                bestDist := dist
+                best := lvl
+        if not _dirBull and lvl > close
+            dist = math.abs(close - lvl)
+            if dist < bestDist
+                bestDist := dist
+                best := lvl
+    best
+
+selectedLevel = bias == 1 ? f_findNearestLevel(bullLevels, true) : bias == -1 ? f_findNearestLevel(bearLevels, false) : na
+
+// Impulse leg and golden zone
+htfLegHigh = ta.highest(htfHigh, ImpulseLegLookback)
+htfLegLow  = ta.lowest(htfLow, ImpulseLegLookback)
+htfGold50  = (htfLegHigh + htfLegLow) / 2.0
+
+inGoldenZone = math.abs(close - htfGold50) <= f_pointsToPrice(GoldenZoneTolerancePts) or (ta.lowest(low, GoldenZoneLookbackBars) <= htfGold50 and ta.highest(high, GoldenZoneLookbackBars) >= htfGold50)
+
+//+------------------------------------------------------------------+
+//| LTF ENTRY CONDITIONS                                             |
+//+------------------------------------------------------------------+
+
+sweepMin = f_pointsToPrice(SweepMinPoints)
+sweepMax = f_pointsToPrice(SweepMaxPoints)
+
+sweptAndReclaimedBull = not na(selectedLevel) and low <= selectedLevel - sweepMin and low >= selectedLevel - sweepMax and close > selectedLevel
+sweptAndReclaimedBear = not na(selectedLevel) and high >= selectedLevel + sweepMin and high <= selectedLevel + sweepMax and close < selectedLevel
+
+pivotHigh = ta.pivothigh(high, PivotLookback, PivotLookback)
+pivotLow  = ta.pivotlow(low, PivotLookback, PivotLookback)
+lastPivotHigh = ta.valuewhen(not na(pivotHigh), pivotHigh, 0)
+lastPivotLow  = ta.valuewhen(not na(pivotLow), pivotLow, 0)
+
+chochBull = not na(lastPivotHigh) and close > lastPivotHigh
+chochBear = not na(lastPivotLow) and close < lastPivotLow
+
+atrLTF = ta.atr(ATRPeriod)
+body = math.abs(close - open)
+
+breakBuffer = f_pointsToPrice(BreakCloseBufferPts)
+
+isDisplacementBull = body >= DisplacementATRMult * atrLTF and not na(lastPivotHigh) and close > lastPivotHigh + breakBuffer
+isDisplacementBear = body >= DisplacementATRMult * atrLTF and not na(lastPivotLow) and close < lastPivotLow - breakBuffer
+
+sessionOk = f_sessionAllowed()
+newsBlocked = f_manualNewsBlock()
+
+//+------------------------------------------------------------------+
+//| TRADE LIMITS                                                     |
+//+------------------------------------------------------------------+
+
+var int tradesToday = 0
+var int tradesWeek = 0
+var int lastDay = na
+var int lastWeek = na
+
+currentDay = dayofyear
+currentWeek = weekofyear
+
+if lastDay != currentDay
+    tradesToday := 0
+    lastDay := currentDay
+
+if lastWeek != currentWeek
+    tradesWeek := 0
+    lastWeek := currentWeek
+
+tradeLimitsOk = tradesToday < MaxTradesPerDay and tradesWeek < MaxTradesPerWeek
+
+//+------------------------------------------------------------------+
+//| POSITION SIZING                                                  |
+//+------------------------------------------------------------------+
+
+f_calcQty(_entry, _sl) =>
+    riskMoney = strategy.equity * (RiskPercent / 100)
+    slDistance = math.abs(_entry - _sl)
+    slPoints = slDistance / syminfo.mintick
+    slPoints <= 0 ? 0.0 : riskMoney / (slPoints * syminfo.pointvalue)
+
+//+------------------------------------------------------------------+
+//| ENTRY LOGIC                                                      |
+//+------------------------------------------------------------------+
+
+longSetup = AllowLongs and bias == 1 and sessionOk and not newsBlocked and tradeLimitsOk and sweptAndReclaimedBull and inGoldenZone and chochBull and isDisplacementBull
+shortSetup = AllowShorts and bias == -1 and sessionOk and not newsBlocked and tradeLimitsOk and sweptAndReclaimedBear and inGoldenZone and chochBear and isDisplacementBear
+
+var float entryPrice = na
+var float initialSL = na
+var float initialTP = na
+var float initialR = na
+var bool did1R = false
+var bool did2R = false
+var bool trailActive = false
+
+if longSetup and strategy.position_size == 0
+    entryPrice := close
+    initialSL := selectedLevel - f_pointsToPrice(SLBufferPoints)
+    initialTP := htfLegHigh - f_pointsToPrice(TPBufferPoints)
+    initialR := math.abs(entryPrice - initialSL)
+    did1R := false
+    did2R := false
+    trailActive := false
+    qty = f_calcQty(entryPrice, initialSL)
+    strategy.entry("Long", strategy.long, qty=qty)
+    tradesToday += 1
+    tradesWeek += 1
+
+if shortSetup and strategy.position_size == 0
+    entryPrice := close
+    initialSL := selectedLevel + f_pointsToPrice(SLBufferPoints)
+    initialTP := htfLegLow + f_pointsToPrice(TPBufferPoints)
+    initialR := math.abs(entryPrice - initialSL)
+    did1R := false
+    did2R := false
+    trailActive := false
+    qty = f_calcQty(entryPrice, initialSL)
+    strategy.entry("Short", strategy.short, qty=qty)
+    tradesToday += 1
+    tradesWeek += 1
+
+//+------------------------------------------------------------------+
+//| TRADE MANAGEMENT                                                 |
+//+------------------------------------------------------------------+
+
+inLong = strategy.position_size > 0
+inShort = strategy.position_size < 0
+
+if strategy.position_size == 0
+    entryPrice := na
+    initialSL := na
+    initialTP := na
+    initialR := na
+    did1R := false
+    did2R := false
+    trailActive := false
+
+currentStop = initialSL
+
+if inLong and not na(initialR)
+    profitR = (close - entryPrice) / initialR
+    if TradeMgmtMode == "Iron Dome"
+        if profitR >= 1 and not did1R
+            did1R := true
+        if profitR >= 2 and not did2R
+            did2R := true
+        if did1R
+            currentStop := entryPrice
+        if did2R
+            currentStop := math.max(currentStop, entryPrice + initialR)
+        if profitR >= 3
+            steps = math.floor(profitR) - 1
+            currentStop := math.max(currentStop, entryPrice + (steps * initialR))
+
+        strategy.exit("ID-1R", from_entry="Long", qty_percent=25, limit=entryPrice + initialR)
+        strategy.exit("ID-2R", from_entry="Long", qty_percent=25, limit=entryPrice + (2 * initialR))
+        strategy.exit("ID-Runner", from_entry="Long", stop=currentStop, limit=initialTP)
+    else
+        if close >= entryPrice + (0.8 * math.abs(initialTP - entryPrice))
+            currentStop := entryPrice
+        if isDisplacementBull and chochBull
+            trailActive := true
+        if trailActive and profitR >= 2
+            steps = math.floor(profitR) - 1
+            currentStop := math.max(currentStop, entryPrice + (steps * initialR))
+        strategy.exit("Shield", from_entry="Long", stop=currentStop, limit=initialTP)
+
+if inShort and not na(initialR)
+    profitR = (entryPrice - close) / initialR
+    if TradeMgmtMode == "Iron Dome"
+        if profitR >= 1 and not did1R
+            did1R := true
+        if profitR >= 2 and not did2R
+            did2R := true
+        if did1R
+            currentStop := entryPrice
+        if did2R
+            currentStop := math.min(currentStop, entryPrice - initialR)
+        if profitR >= 3
+            steps = math.floor(profitR) - 1
+            currentStop := math.min(currentStop, entryPrice - (steps * initialR))
+
+        strategy.exit("ID-1R", from_entry="Short", qty_percent=25, limit=entryPrice - initialR)
+        strategy.exit("ID-2R", from_entry="Short", qty_percent=25, limit=entryPrice - (2 * initialR))
+        strategy.exit("ID-Runner", from_entry="Short", stop=currentStop, limit=initialTP)
+    else
+        if close <= entryPrice - (0.8 * math.abs(entryPrice - initialTP))
+            currentStop := entryPrice
+        if isDisplacementBear and chochBear
+            trailActive := true
+        if trailActive and profitR >= 2
+            steps = math.floor(profitR) - 1
+            currentStop := math.min(currentStop, entryPrice - (steps * initialR))
+        strategy.exit("Shield", from_entry="Short", stop=currentStop, limit=initialTP)
+
+//+------------------------------------------------------------------+
+//| VISUALS                                                          |
+//+------------------------------------------------------------------+
+
+plot(selectedLevel, "Indication Level", color=color.new(color.orange, 20), style=plot.style_linebr)
+plot(htfGold50, "HTF Golden 50%", color=color.new(color.aqua, 20))
+plotshape(longSetup, title="Long Setup", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(shortSetup, title="Short Setup", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
