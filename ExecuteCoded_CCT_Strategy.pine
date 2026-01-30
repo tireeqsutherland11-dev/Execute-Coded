@@ -1,7 +1,5 @@
 //@version=6
 // NOTE: Pine Script v6 is required; keep this at v6 to avoid merge conflicts with older versions.
-
-main
 strategy("Execute-Coded CCT Strategy (HTF Bias + LTF ICC)", overlay=true, initial_capital=10000, pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.0)
 
 //+------------------------------------------------------------------+
@@ -19,8 +17,8 @@ MomentumATRMult   = input.float(1.00, "Momentum Range >= ATR *", minval=0.1, ste
 // --- Filters / volatility ---
 ATRPeriod  = input.int(14, "ATR Period")
 ATRMin     = input.float(0.0005, "Minimum ATR (symbol price)")
-RangeLookback = input.int(20, "Consolidation Range Lookback")
-RangeMin      = input.float(0.0020, "Minimum Range (HTF)")
+ConsolidationLookback = input.int(20, "Consolidation Range Lookback")
+ConsolidationMin      = input.float(0.0020, "Minimum Range (HTF)")
 
 // --- Indication level rules ---
 WickLookback = input.int(50, "Wick Lookback (HTF)")
@@ -80,13 +78,13 @@ isNewHTFBar = ta.change(time(htfTimeframe))
 
 f_body(_open, _close) => math.abs(_close - _open)
 
-f_candleRange(_high, _low) => _high - _low
+f_candleSpan(_high, _low) => _high - _low
 
 f_isMomentumCandle(_open, _high, _low, _close, _atr) =>
     body = f_body(_open, _close)
-    candleRange = f_candleRange(_high, _low)
-    bodyRatio = candleRange == 0.0 ? 0.0 : body / candleRange
-    bodyRatio >= MomentumBodyRatio and candleRange >= (_atr * MomentumATRMult)
+    candleSpan = f_candleSpan(_high, _low)
+    bodyRatio = candleSpan == 0.0 ? 0.0 : body / candleSpan
+    bodyRatio >= MomentumBodyRatio and candleSpan >= (_atr * MomentumATRMult)
 
 f_isImpulseBull(_open, _high, _low, _close, _atr, _highPrev, _closePrev) =>
     _close > _open and _high > _highPrev and _close > _closePrev and f_isMomentumCandle(_open, _high, _low, _close, _atr)
@@ -126,8 +124,8 @@ f_manualNewsBlock() =>
 var float[] bullLevels = array.new_float()
 var float[] bearLevels = array.new_float()
 
-htfRange = htfHigh - htfLow
-htfIsConsolidating = (htfATR < ATRMin) or (ta.highest(htfHigh, RangeLookback) - ta.lowest(htfLow, RangeLookback) < RangeMin)
+htfSpan = htfHigh - htfLow
+htfIsConsolidating = (htfATR < ATRMin) or (ta.highest(htfHigh, ConsolidationLookback) - ta.lowest(htfLow, ConsolidationLookback) < ConsolidationMin)
 
 f_hasImpulseSequence(_dirBull) =>
     ok = true
