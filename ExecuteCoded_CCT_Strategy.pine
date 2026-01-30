@@ -1,5 +1,7 @@
 //@version=6
 // NOTE: Pine Script v6 is required; keep this at v6 to avoid merge conflicts with older versions.
+
+main
 strategy("Execute-Coded CCT Strategy (HTF Bias + LTF ICC)", overlay=true, initial_capital=10000, pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.0)
 
 //+------------------------------------------------------------------+
