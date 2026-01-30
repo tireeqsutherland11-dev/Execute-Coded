@@ -237,11 +237,11 @@ var int lastWeek = na
 currentDay = dayofyear
 currentWeek = weekofyear
 
-if lastDay != currentDay
+if na(lastDay) or lastDay != currentDay
     tradesToday := 0
     lastDay := currentDay
 
-if lastWeek != currentWeek
+if na(lastWeek) or lastWeek != currentWeek
     tradesWeek := 0
     lastWeek := currentWeek
 
