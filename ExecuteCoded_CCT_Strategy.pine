@@ -165,14 +165,18 @@ if isNewHTFBar
                     array.pop(bearLevels)
 
         // Remove touched levels
-        for i = array.size(bullLevels) - 1 to 0
-            lvl = array.get(bullLevels, i)
+        idxBull = array.size(bullLevels) - 1
+        while idxBull >= 0
+            lvl = array.get(bullLevels, idxBull)
             if htfLow <= lvl
-                array.remove(bullLevels, i)
-        for i = array.size(bearLevels) - 1 to 0
-            lvl = array.get(bearLevels, i)
+                array.remove(bullLevels, idxBull)
+            idxBull -= 1
+        idxBear = array.size(bearLevels) - 1
+        while idxBear >= 0
+            lvl = array.get(bearLevels, idxBear)
             if htfHigh >= lvl
-                array.remove(bearLevels, i)
+                array.remove(bearLevels, idxBear)
+            idxBear -= 1
 
 f_findNearestLevel(_levels, _dirBull) =>
     float best = na
@@ -240,7 +244,7 @@ var int tradesWeek = 0
 var int lastDay = na
 var int lastWeek = na
 
-currentDay = dayofyear(time)
+currentDay = (year(time) * 10000) + (month(time) * 100) + dayofmonth(time)
 currentWeek = weekofyear(time)
 
 if na(lastDay) or lastDay != currentDay
