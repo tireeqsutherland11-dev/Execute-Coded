@@ -61,7 +61,7 @@ input ENUM_TIMEFRAMES TF_Bias  = PERIOD_H4;   // Higher timeframe for bias
 input ENUM_TIMEFRAMES TF_Entry = PERIOD_M5;   // Lower timeframe for entries
 
 // --- Bias / Impulse (CIT) settings ---
-input int    BiasImpulseBars         = 2;     // Required consecutive impulse candles
+input int    BiasImpulseBars         = 2;     // Required consecutive impulse candles (min 2)
 input double MomentumBodyRatio       = 0.60;  // Body / Range ratio for momentum
 input double MomentumATRMult         = 1.00;  // Range >= ATR * multiplier
 
@@ -73,11 +73,10 @@ input double RangeMin                = 0.0020; // Minimum range to avoid consoli
 
 // --- Indication level rules ---
 input int    WickLookback            = 50;    // How many H4 candles to scan
-input bool   UseWickHighsForBull     = false; // Default: use wick lows for bull
-input double WickMomentumATRMult     = 1.00;  // Momentum candle range >= ATR * this
 
 // --- Entry rules (M5) ---
 input double SweepMinPoints          = 20;    // Minimum sweep beyond level (points)
+input double SweepMaxPoints          = 50;    // Maximum sweep beyond level (points)
 input double GoldenZoneTolerancePts  = 20;    // Tolerance around 50% retrace
 input int    GoldenZoneLookbackBars  = 30;    // Bars to detect price touching 50%
 input int    PivotLookback           = 2;     // Pivot lookback (fractal-style)
@@ -355,8 +354,9 @@ BiasDirection DetectBiasByImpulseCIT(const ENUM_TIMEFRAMES tf)
 {
    int bullCount = 0;
    int bearCount = 0;
+   int barsToCheck = MathMax(BiasImpulseBars, 2);
 
-   for(int i = 1; i <= BiasImpulseBars; i++)
+   for(int i = 1; i <= barsToCheck; i++)
    {
       if(!IsImpulseCandle(tf, i))
          return BIAS_NONE;
@@ -368,9 +368,9 @@ BiasDirection DetectBiasByImpulseCIT(const ENUM_TIMEFRAMES tf)
          bearCount++;
    }
 
-   if(bullCount == BiasImpulseBars)
+   if(bullCount == barsToCheck)
       return BIAS_BULL;
-   if(bearCount == BiasImpulseBars)
+   if(bearCount == barsToCheck)
       return BIAS_BEAR;
 
    return BIAS_NONE;
@@ -453,14 +453,14 @@ bool IsWickUntouched(const ENUM_TIMEFRAMES tf, const int wickIndex, const double
    {
       if(bias == BIAS_BULL)
       {
-         // For bullish continuation we want price not to dip to/through the wick level.
-         if(iLow(_Symbol, tf, i) <= level)
+         // For bullish continuation we want price not to rise to/through the wick high.
+         if(iHigh(_Symbol, tf, i) >= level)
             return false;
       }
       else if(bias == BIAS_BEAR)
       {
-         // For bearish continuation we want price not to rise to/through the wick level.
-         if(iHigh(_Symbol, tf, i) >= level)
+         // For bearish continuation we want price not to dip to/through the wick low.
+         if(iLow(_Symbol, tf, i) <= level)
             return false;
       }
    }
@@ -475,24 +475,20 @@ void DetectIndicationLevels(const ENUM_TIMEFRAMES tf, const BiasDirection bias)
 
    for(int i = 1; i <= WickLookback; i++)
    {
-      double open  = iOpen(_Symbol, tf, i);
-      double close = iClose(_Symbol, tf, i);
       double high  = iHigh(_Symbol, tf, i);
       double low   = iLow(_Symbol, tf, i);
       double range = high - low;
       if(range <= 0)
          continue;
 
-      double atr = iATR(_Symbol, tf, ATRPeriod, i);
-      bool momentumCandle = (range >= atr * WickMomentumATRMult) && (MathAbs(close - open) / range >= MomentumBodyRatio);
-      if(!momentumCandle)
+      if(!IsMomentumCandle(tf, i))
          continue;
 
       double wickLevel = 0.0;
       if(bias == BIAS_BULL)
-         wickLevel = (UseWickHighsForBull ? high : low);
+         wickLevel = high;
       else if(bias == BIAS_BEAR)
-         wickLevel = high; // default for bearish = upper wicks
+         wickLevel = low;
       else
          continue;
 
@@ -554,13 +550,15 @@ bool SweptLevelAndReclaimed(const Level &lvl, const BiasDirection bias)
 
    if(bias == BIAS_BULL)
    {
-      bool swept = (low <= lvl.price - (SweepMinPoints * _Point));
+      double sweepPoints = (lvl.price - low) / _Point;
+      bool swept = (sweepPoints >= SweepMinPoints && sweepPoints <= SweepMaxPoints);
       bool reclaimed = (close > lvl.price);
       return swept && reclaimed;
    }
    else if(bias == BIAS_BEAR)
    {
-      bool swept = (high >= lvl.price + (SweepMinPoints * _Point));
+      double sweepPoints = (high - lvl.price) / _Point;
+      bool swept = (sweepPoints >= SweepMinPoints && sweepPoints <= SweepMaxPoints);
       bool reclaimed = (close < lvl.price);
       return swept && reclaimed;
    }
@@ -710,8 +708,6 @@ bool DisplacementBreakout(const BiasDirection bias, const double brokenLevel)
 {
    double open  = iOpen(_Symbol, TF_Entry, 1);
    double close = iClose(_Symbol, TF_Entry, 1);
-   double high  = iHigh(_Symbol, TF_Entry, 1);
-   double low   = iLow(_Symbol, TF_Entry, 1);
    double atr   = iATR(_Symbol, TF_Entry, ATRPeriod, 1);
 
    double body = MathAbs(close - open);
@@ -1114,4 +1110,3 @@ void OnTick()
    // Manage open positions on every tick.
    ManageOpenPositions();
 }
-
