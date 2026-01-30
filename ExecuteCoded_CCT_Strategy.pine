@@ -59,6 +59,8 @@ TradeMgmtMode = input.string("Iron Dome", "Management Mode", options=["Iron Dome
 // --- Execution / misc ---
 AllowLongs  = input.bool(true, "Allow Longs")
 AllowShorts = input.bool(true, "Allow Shorts")
+DebugMode   = input.bool(false, "Debug Mode (show condition states)")
+RelaxedEntries = input.bool(false, "Relaxed Entries (skip CHoCH/Displacement)")
 
 //+------------------------------------------------------------------+
 //| HTF DATA (request.security)                                     |
@@ -271,8 +273,14 @@ f_calcQty(_entry, _sl) =>
 //| ENTRY LOGIC                                                      |
 //+------------------------------------------------------------------+
 
-longSetup = AllowLongs and bias == 1 and sessionOk and not newsBlocked and tradeLimitsOk and sweptAndReclaimedBull and inGoldenZone and chochBull and isDisplacementBull
-shortSetup = AllowShorts and bias == -1 and sessionOk and not newsBlocked and tradeLimitsOk and sweptAndReclaimedBear and inGoldenZone and chochBear and isDisplacementBear
+baseFiltersOk = sessionOk and not newsBlocked and tradeLimitsOk
+strictLongSetup = AllowLongs and bias == 1 and baseFiltersOk and sweptAndReclaimedBull and inGoldenZone and chochBull and isDisplacementBull
+strictShortSetup = AllowShorts and bias == -1 and baseFiltersOk and sweptAndReclaimedBear and inGoldenZone and chochBear and isDisplacementBear
+relaxedLongSetup = AllowLongs and bias == 1 and baseFiltersOk and inGoldenZone
+relaxedShortSetup = AllowShorts and bias == -1 and baseFiltersOk and inGoldenZone
+
+longSetup = RelaxedEntries ? relaxedLongSetup : strictLongSetup
+shortSetup = RelaxedEntries ? relaxedShortSetup : strictShortSetup
 
 var float entryPrice = na
 var float initialSL = na
@@ -390,3 +398,16 @@ plot(selectedLevel, "Indication Level", color=color.new(color.orange, 20), style
 plot(htfGold50, "HTF Golden 50%", color=color.new(color.aqua, 20))
 plotshape(longSetup, title="Long Setup", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
 plotshape(shortSetup, title="Short Setup", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
+
+plotshape(DebugMode and bias == 1, title="Debug: Bias Bull", style=shape.circle, location=location.bottom, color=color.new(color.green, 65), size=size.tiny)
+plotshape(DebugMode and bias == -1, title="Debug: Bias Bear", style=shape.circle, location=location.bottom, color=color.new(color.red, 65), size=size.tiny)
+plotshape(DebugMode and not sessionOk, title="Debug: Session Block", style=shape.xcross, location=location.top, color=color.new(color.yellow, 0), size=size.tiny)
+plotshape(DebugMode and newsBlocked, title="Debug: News Block", style=shape.xcross, location=location.top, color=color.new(color.orange, 0), size=size.tiny)
+plotshape(DebugMode and not tradeLimitsOk, title="Debug: Trade Limit Block", style=shape.xcross, location=location.top, color=color.new(color.red, 0), size=size.tiny)
+plotshape(DebugMode and sweptAndReclaimedBull, title="Debug: Sweep Bull", style=shape.triangleup, location=location.bottom, color=color.new(color.lime, 60), size=size.tiny)
+plotshape(DebugMode and sweptAndReclaimedBear, title="Debug: Sweep Bear", style=shape.triangledown, location=location.top, color=color.new(color.maroon, 60), size=size.tiny)
+plotshape(DebugMode and inGoldenZone, title="Debug: Golden Zone", style=shape.square, location=location.bottom, color=color.new(color.aqua, 60), size=size.tiny)
+plotshape(DebugMode and chochBull, title="Debug: CHoCH Bull", style=shape.triangleup, location=location.bottom, color=color.new(color.teal, 60), size=size.tiny)
+plotshape(DebugMode and chochBear, title="Debug: CHoCH Bear", style=shape.triangledown, location=location.top, color=color.new(color.blue, 60), size=size.tiny)
+plotshape(DebugMode and isDisplacementBull, title="Debug: Displacement Bull", style=shape.diamond, location=location.bottom, color=color.new(color.green, 60), size=size.tiny)
+plotshape(DebugMode and isDisplacementBear, title="Debug: Displacement Bear", style=shape.diamond, location=location.top, color=color.new(color.red, 60), size=size.tiny)
