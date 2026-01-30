@@ -70,7 +70,7 @@ htfLow   = request.security(syminfo.tickerid, htfTimeframe, low,   barmerge.gaps
 htfClose = request.security(syminfo.tickerid, htfTimeframe, close, barmerge.gaps_off, barmerge.lookahead_off)
 htfATR   = request.security(syminfo.tickerid, htfTimeframe, ta.atr(ATRPeriod), barmerge.gaps_off, barmerge.lookahead_off)
 
-isNewHTFBar = ta.change(time(htfTimeframe))
+bool isNewHTFBar = ta.change(time(htfTimeframe)) != 0
 
 //+------------------------------------------------------------------+
 //| UTILITY FUNCTIONS                                                |
@@ -109,7 +109,7 @@ f_manualNewsBlock() =>
         // Basic manual parser: if any news timestamp matches current day-hour-minute, block.
         // This is a coarse filter (no calendar access in Pine).
         tokens = str.split(ManualNewsTimesCSV, ",")
-        currentStamp = str.format("{0,date,yyyy-MM-dd} {1,number,00}:{2,number,00}", year, month, dayofmonth, hour, minute)
+        currentStamp = str.tostring(year, "0000") + "-" + str.tostring(month, "00") + "-" + str.tostring(dayofmonth, "00") + " " + str.tostring(hour, "00") + ":" + str.tostring(minute, "00")
         isMatch = false
         for idx = 0 to array.size(tokens) - 1
             token = str.trim(array.get(tokens, idx))
@@ -125,7 +125,9 @@ var float[] bullLevels = array.new_float()
 var float[] bearLevels = array.new_float()
 
 htfSpan = htfHigh - htfLow
-htfIsConsolidating = (htfATR < ATRMin) or (ta.highest(htfHigh, ConsolidationLookback) - ta.lowest(htfLow, ConsolidationLookback) < ConsolidationMin)
+htfHighest = ta.highest(htfHigh, ConsolidationLookback)
+htfLowest = ta.lowest(htfLow, ConsolidationLookback)
+bool htfIsConsolidating = (htfATR < ATRMin) or (htfHighest - htfLowest < ConsolidationMin)
 
 f_hasImpulseSequence(_dirBull) =>
     ok = true
@@ -136,6 +138,9 @@ f_hasImpulseSequence(_dirBull) =>
             ok := ok and f_isImpulseBear(htfOpen[i], htfHigh[i], htfLow[i], htfClose[i], htfATR[i], htfLow[i + 1], htfClose[i + 1])
     ok
 
+bool bullSeq = f_hasImpulseSequence(true)
+bool bearSeq = f_hasImpulseSequence(false)
+
 var int bias = 0 // 1 bull, -1 bear, 0 none
 
 if isNewHTFBar
@@ -144,8 +149,6 @@ if isNewHTFBar
         array.clear(bullLevels)
         array.clear(bearLevels)
     else
-        bullSeq = f_hasImpulseSequence(true)
-        bearSeq = f_hasImpulseSequence(false)
         bias := bullSeq ? 1 : bearSeq ? -1 : 0
 
         // Capture indication levels from momentum candles.
@@ -172,8 +175,8 @@ if isNewHTFBar
                 array.remove(bearLevels, i)
 
 f_findNearestLevel(_levels, _dirBull) =>
-    best = na
-    bestDist = 1e10
+    float best = na
+    float bestDist = 1e10
     for i = 0 to array.size(_levels) - 1
         lvl = array.get(_levels, i)
         if _dirBull and lvl < close
@@ -195,7 +198,9 @@ htfLegHigh = ta.highest(htfHigh, ImpulseLegLookback)
 htfLegLow  = ta.lowest(htfLow, ImpulseLegLookback)
 htfGold50  = (htfLegHigh + htfLegLow) / 2.0
 
-inGoldenZone = math.abs(close - htfGold50) <= f_pointsToPrice(GoldenZoneTolerancePts) or (ta.lowest(low, GoldenZoneLookbackBars) <= htfGold50 and ta.highest(high, GoldenZoneLookbackBars) >= htfGold50)
+ltfLowest = ta.lowest(low, GoldenZoneLookbackBars)
+ltfHighest = ta.highest(high, GoldenZoneLookbackBars)
+inGoldenZone = math.abs(close - htfGold50) <= f_pointsToPrice(GoldenZoneTolerancePts) or (ltfLowest <= htfGold50 and ltfHighest >= htfGold50)
 
 //+------------------------------------------------------------------+
 //| LTF ENTRY CONDITIONS                                             |
@@ -235,8 +240,8 @@ var int tradesWeek = 0
 var int lastDay = na
 var int lastWeek = na
 
-currentDay = year * 10000 + month * 100 + dayofmonth
-currentWeek = weekofyear
+currentDay = dayofyear(time)
+currentWeek = weekofyear(time)
 
 if na(lastDay) or lastDay != currentDay
     tradesToday := 0
