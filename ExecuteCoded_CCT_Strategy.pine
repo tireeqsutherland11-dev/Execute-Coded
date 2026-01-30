@@ -235,7 +235,7 @@ var int tradesWeek = 0
 var int lastDay = na
 var int lastWeek = na
 
-currentDay = dayofyear
+currentDay = year * 10000 + month * 100 + dayofmonth
 currentWeek = weekofyear
 
 if na(lastDay) or lastDay != currentDay
