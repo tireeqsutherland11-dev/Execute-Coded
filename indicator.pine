@@ -76,12 +76,14 @@ f_refreshLine(_line, _label, _level, _color, _text) =>
 dirChanged = impulseDir != lastDir
 
 if dirChanged or htfLevel != lastHtfLevel
-    [htfLine, htfLabel] := f_refreshLine(htfLine, htfLabel, htfLevel, color.new(color.teal, 0), "4H Wick")
+    [htfLine, htfLabel] = f_refreshLine(htfLine, htfLabel, htfLevel, color.new(color.teal, 0), "4H Wick")
     lastHtfLevel := htfLevel
 
 if dirChanged or ltfLevel != lastLtfLevel
-    [ltfLine, ltfLabel] := f_refreshLine(ltfLine, ltfLabel, ltfLevel, color.new(color.orange, 0), "1H Wick")
+    [ltfLine, ltfLabel] = f_refreshLine(ltfLine, ltfLabel, ltfLevel, color.new(color.orange, 0), "1H Wick")
     lastLtfLevel := ltfLevel
+
+if dirChanged
     lastDir := impulseDir
 
 plotchar(impulseDir == 1, title="Bull Impulse", char="▲", location=location.top, color=color.new(color.green, 0), size=size.tiny)
