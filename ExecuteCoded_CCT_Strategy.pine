@@ -119,6 +119,32 @@ f_manualNewsBlock() =>
                 isMatch := true
         isMatch
 
+f_recentUntouchedHigh(_lookback) =>
+    float level = na
+    for i = 1 to _lookback
+        if na(level)
+            candidate = high[i]
+            touched = false
+            for j = 0 to i - 1
+                if high[j] >= candidate
+                    touched := true
+            if not touched
+                level := candidate
+    level
+
+f_recentUntouchedLow(_lookback) =>
+    float level = na
+    for i = 1 to _lookback
+        if na(level)
+            candidate = low[i]
+            touched = false
+            for j = 0 to i - 1
+                if low[j] <= candidate
+                    touched := true
+            if not touched
+                level := candidate
+    level
+
 //+------------------------------------------------------------------+
 //| HTF BIAS + LEVELS                                                |
 //+------------------------------------------------------------------+
@@ -142,6 +168,7 @@ f_hasImpulseSequence(_dirBull) =>
 
 bool bullSeq = f_hasImpulseSequence(true)
 bool bearSeq = f_hasImpulseSequence(false)
+int impulseDir = bullSeq ? 1 : bearSeq ? -1 : 0
 
 var int bias = 0 // 1 bull, -1 bear, 0 none
 
@@ -198,6 +225,14 @@ f_findNearestLevel(_levels, _dirBull) =>
     best
 
 selectedLevel = bias == 1 ? f_findNearestLevel(bullLevels, true) : bias == -1 ? f_findNearestLevel(bearLevels, false) : na
+
+recent4hHigh = request.security(syminfo.tickerid, "240", f_recentUntouchedHigh(WickLookback), barmerge.gaps_off, barmerge.lookahead_off)
+recent4hLow = request.security(syminfo.tickerid, "240", f_recentUntouchedLow(WickLookback), barmerge.gaps_off, barmerge.lookahead_off)
+recent1hHigh = request.security(syminfo.tickerid, "60", f_recentUntouchedHigh(WickLookback), barmerge.gaps_off, barmerge.lookahead_off)
+recent1hLow = request.security(syminfo.tickerid, "60", f_recentUntouchedLow(WickLookback), barmerge.gaps_off, barmerge.lookahead_off)
+
+recent4hWick = impulseDir == 1 ? recent4hHigh : impulseDir == -1 ? recent4hLow : na
+recent1hWick = impulseDir == 1 ? recent1hHigh : impulseDir == -1 ? recent1hLow : na
 
 // Impulse leg and golden zone
 htfLegHigh = ta.highest(htfHigh, ImpulseLegLookback)
@@ -396,6 +431,8 @@ if inShort and not na(initialR)
 
 plot(selectedLevel, "Indication Level", color=color.new(color.orange, 20), style=plot.style_linebr)
 plot(htfGold50, "HTF Golden 50%", color=color.new(color.aqua, 20))
+plot(recent4hWick, "4H Untouched Wick", color=color.new(color.purple, 0), style=plot.style_linebr, linewidth=2)
+plot(recent1hWick, "1H Untouched Wick", color=color.new(color.fuchsia, 0), style=plot.style_linebr, linewidth=1)
 plotshape(longSetup, title="Long Setup", style=shape.triangleup, location=location.belowbar, color=color.new(color.green, 0), size=size.tiny)
 plotshape(shortSetup, title="Short Setup", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny)
 
