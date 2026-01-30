@@ -1,0 +1,88 @@
+//@version=6
+indicator("Execute-Coded Impulse Wick Marker", overlay=true)
+
+// Timeframes
+htfTimeframe = "240"
+ltfTimeframe = "60"
+
+// Inputs
+htfLookback = input.int(50, "4H Wick Lookback", minval=2)
+ltfLookback = input.int(50, "1H Wick Lookback", minval=2)
+
+// HTF data for impulse direction
+htfOpen = request.security(syminfo.tickerid, htfTimeframe, open, barmerge.gaps_off, barmerge.lookahead_off)
+htfClose = request.security(syminfo.tickerid, htfTimeframe, close, barmerge.gaps_off, barmerge.lookahead_off)
+htfHigh = request.security(syminfo.tickerid, htfTimeframe, high, barmerge.gaps_off, barmerge.lookahead_off)
+htfLow = request.security(syminfo.tickerid, htfTimeframe, low, barmerge.gaps_off, barmerge.lookahead_off)
+
+// LTF data for wick marking
+ltfHigh = request.security(syminfo.tickerid, ltfTimeframe, high, barmerge.gaps_off, barmerge.lookahead_off)
+ltfLow = request.security(syminfo.tickerid, ltfTimeframe, low, barmerge.gaps_off, barmerge.lookahead_off)
+
+// Impulse definition: last 2 or more 4H candles are impulse in same direction
+bullImpulse = htfClose[1] > htfOpen[1] and htfClose[2] > htfOpen[2]
+bearImpulse = htfClose[1] < htfOpen[1] and htfClose[2] < htfOpen[2]
+impulseDir = bullImpulse ? 1 : bearImpulse ? -1 : 0
+
+f_recentUntouchedHigh(_src, _lookback) =>
+    float level = na
+    for i = 1 to _lookback
+        if na(level)
+            candidate = _src[i]
+            touched = false
+            for j = 0 to i - 1
+                if _src[j] >= candidate
+                    touched := true
+            if not touched
+                level := candidate
+    level
+
+f_recentUntouchedLow(_src, _lookback) =>
+    float level = na
+    for i = 1 to _lookback
+        if na(level)
+            candidate = _src[i]
+            touched = false
+            for j = 0 to i - 1
+                if _src[j] <= candidate
+                    touched := true
+            if not touched
+                level := candidate
+    level
+
+htfLevel = impulseDir == 1 ? f_recentUntouchedHigh(htfHigh, htfLookback) : impulseDir == -1 ? f_recentUntouchedLow(htfLow, htfLookback) : na
+ltfLevel = impulseDir == 1 ? f_recentUntouchedHigh(ltfHigh, ltfLookback) : impulseDir == -1 ? f_recentUntouchedLow(ltfLow, ltfLookback) : na
+
+var line htfLine = na
+var line ltfLine = na
+var label htfLabel = na
+var label ltfLabel = na
+var float lastHtfLevel = na
+var float lastLtfLevel = na
+var int lastDir = 0
+
+f_refreshLine(_line, _label, _level, _color, _text) =>
+    if not na(_line)
+        line.delete(_line)
+    if not na(_label)
+        label.delete(_label)
+    if na(_level)
+        [na, na]
+    else
+        newLine = line.new(bar_index, _level, bar_index + 1, _level, extend=extend.right, color=_color, width=2)
+        newLabel = label.new(bar_index, _level, _text, style=label.style_label_left, color=_color, textcolor=color.white)
+        [newLine, newLabel]
+
+dirChanged = impulseDir != lastDir
+
+if dirChanged or htfLevel != lastHtfLevel
+    [htfLine, htfLabel] := f_refreshLine(htfLine, htfLabel, htfLevel, color.new(color.teal, 0), "4H Wick")
+    lastHtfLevel := htfLevel
+
+if dirChanged or ltfLevel != lastLtfLevel
+    [ltfLine, ltfLabel] := f_refreshLine(ltfLine, ltfLabel, ltfLevel, color.new(color.orange, 0), "1H Wick")
+    lastLtfLevel := ltfLevel
+    lastDir := impulseDir
+
+plotchar(impulseDir == 1, title="Bull Impulse", char="▲", location=location.top, color=color.new(color.green, 0), size=size.tiny)
+plotchar(impulseDir == -1, title="Bear Impulse", char="▼", location=location.bottom, color=color.new(color.red, 0), size=size.tiny)
