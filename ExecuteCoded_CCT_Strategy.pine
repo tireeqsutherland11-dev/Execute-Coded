@@ -165,11 +165,11 @@ if isNewHTFBar
                     array.pop(bearLevels)
 
         // Remove touched levels
-        for i = array.size(bullLevels) - 1 to 0
+        for i = array.size(bullLevels) - 1 to 0 by -1
             lvl = array.get(bullLevels, i)
             if htfLow <= lvl
                 array.remove(bullLevels, i)
-        for i = array.size(bearLevels) - 1 to 0
+        for i = array.size(bearLevels) - 1 to 0 by -1
             lvl = array.get(bearLevels, i)
             if htfHigh >= lvl
                 array.remove(bearLevels, i)
