@@ -1,4 +1,7 @@
-//@version=5
+//@version=6
+// NOTE: Pine Script v6 is required; keep this at v6 to avoid merge conflicts with older versions.
+
+main
 strategy("Execute-Coded CCT Strategy (HTF Bias + LTF ICC)", overlay=true, initial_capital=10000, pyramiding=0, commission_type=strategy.commission.percent, commission_value=0.0)
 
 //+------------------------------------------------------------------+
@@ -77,13 +80,13 @@ isNewHTFBar = ta.change(time(htfTimeframe))
 
 f_body(_open, _close) => math.abs(_close - _open)
 
-f_range(_high, _low) => _high - _low
+f_candleRange(_high, _low) => _high - _low
 
 f_isMomentumCandle(_open, _high, _low, _close, _atr) =>
     body = f_body(_open, _close)
-    range = f_range(_high, _low)
-    bodyRatio = range == 0.0 ? 0.0 : body / range
-    bodyRatio >= MomentumBodyRatio and range >= (_atr * MomentumATRMult)
+    candleRange = f_candleRange(_high, _low)
+    bodyRatio = candleRange == 0.0 ? 0.0 : body / candleRange
+    bodyRatio >= MomentumBodyRatio and candleRange >= (_atr * MomentumATRMult)
 
 f_isImpulseBull(_open, _high, _low, _close, _atr, _highPrev, _closePrev) =>
     _close > _open and _high > _highPrev and _close > _closePrev and f_isMomentumCandle(_open, _high, _low, _close, _atr)
@@ -237,11 +240,11 @@ var int lastWeek = na
 currentDay = dayofyear
 currentWeek = weekofyear
 
-if lastDay != currentDay
+if na(lastDay) or lastDay != currentDay
     tradesToday := 0
     lastDay := currentDay
 
-if lastWeek != currentWeek
+if na(lastWeek) or lastWeek != currentWeek
     tradesWeek := 0
     lastWeek := currentWeek
 
